@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>NF JP Reader</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <h1>NF JP Reader</h1>
+  <label><input id="enabled" type="checkbox"> Subtitles <span>Alt+S</span></label>
+  <label><input id="showJa" type="checkbox"> Japanese <span>Alt+J</span></label>
+  <label><input id="showZh" type="checkbox"> Chinese <span>Alt+C</span></label>
+  <label><input id="furigana" type="checkbox"> Furigana <span>Alt+F</span></label>
+  <label><input id="debug" type="checkbox"> Debug overlay <span>Alt+D</span></label>
+  <label class="font">Font size
+    <input id="fontScale" type="range" min="70" max="160" step="5" value="100">
+    <b id="fontValue">100%</b>
+  </label>
+  <p>Alt+↑ / Alt+↓ moves the block. A replays the line. Q / E jumps to the previous or next line.</p>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "NF JP Reader",
+  "version": "0.2.0",
+  "description": "Japanese and Traditional Chinese subtitles for Netflix, with furigana.",
+  "minimum_chrome_version": "116",
+  "permissions": ["storage", "offscreen"],
+  "action": {
+    "default_title": "NF JP Reader",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "host_permissions": [
+    "https://www.netflix.com/*",
+    "https://netflix.com/*",
+    "https://*.netflix.com/*",
+    "https://*.netflix.net/*",
+    "https://*.nflxvideo.net/*",
+    "https://*.nflxso.net/*",
+    "https://*.nflxext.com/*",
+    "https://*.nflximg.net/*",
+    "https://*.nflximg.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://www.netflix.com/*", "https://netflix.com/*"],
+      "js": ["netflixTracks.js", "parsers.js", "inject.js"],
+      "world": "MAIN",
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["https://www.netflix.com/*", "https://netflix.com/*"],
+      "js": ["ruby.js", "furigana.js", "subtitles.js", "overlay.js", "content.js"],
+      "css": ["overlay.css", "subtitles.css"],
+      "run_at": "document_start"
+    }
+  ]
+}

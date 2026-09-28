@@ -1,0 +1,48 @@
+body {
+  margin: 0;
+  width: 240px;
+  padding: 12px 14px 14px;
+  background: #141414;
+  color: #fff;
+  font: 13px/1.4 "Segoe UI", sans-serif;
+}
+
+h1 {
+  margin: 0 0 10px;
+  font-size: 14px;
+}
+
+label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 6px 0;
+}
+
+label span {
+  margin-left: auto;
+  color: #aaa;
+  font-size: 11px;
+}
+
+label.font {
+  display: block;
+  margin-top: 12px;
+}
+
+input[type="range"] {
+  width: 150px;
+  vertical-align: middle;
+}
+
+#fontValue {
+  display: inline-block;
+  width: 42px;
+  font-weight: 600;
+}
+
+p {
+  margin: 12px 0 0;
+  color: #aaa;
+  font-size: 11px;
+}

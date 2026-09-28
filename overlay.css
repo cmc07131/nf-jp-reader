@@ -1,0 +1,91 @@
+#nfjp-debug {
+  all: initial;
+  position: fixed;
+  z-index: 2147483647;
+  top: 8px;
+  left: 8px;
+  display: block;
+  box-sizing: border-box;
+  width: 300px;
+  max-height: 46vh;
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.55);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.82);
+  color: #fff;
+  font-family: Consolas, "Courier New", ui-monospace, monospace;
+  font-size: 11px;
+  line-height: 1.35;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: pre-wrap;
+  pointer-events: auto;
+  user-select: text;
+  visibility: visible;
+  opacity: 1;
+}
+
+#nfjp-debug[hidden] {
+  display: none;
+}
+
+#nfjp-debug * {
+  all: unset;
+  display: block;
+  box-sizing: border-box;
+  font: inherit;
+  color: inherit;
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+#nfjp-debug .nfjp-title {
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+#nfjp-debug .nfjp-status {
+  color: #ffb4b4;
+  margin-bottom: 4px;
+}
+
+#nfjp-debug .nfjp-tracks,
+#nfjp-debug .nfjp-counts,
+#nfjp-debug .nfjp-ja,
+#nfjp-debug .nfjp-zh {
+  margin-top: 6px;
+}
+
+#nfjp-debug .nfjp-ja,
+#nfjp-debug .nfjp-zh {
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.25);
+}
+
+#nfjp-debug .nfjp-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+#nfjp-debug .nfjp-export,
+#nfjp-debug .nfjp-retry {
+  display: inline-block;
+  margin-top: 0;
+  padding: 4px 8px;
+  border-radius: 3px;
+  background: #e50914;
+  color: #fff;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+#nfjp-debug .nfjp-retry {
+  background: #333;
+}
+
+#nfjp-debug .nfjp-export:disabled {
+  opacity: 0.45;
+  cursor: default;
+}

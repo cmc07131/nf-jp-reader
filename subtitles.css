@@ -1,0 +1,84 @@
+html.nfjp-hide-native .player-timedtext {
+  display: none !important;
+}
+
+#nfjp-subs {
+  position: absolute;
+  left: 50%;
+  right: auto;
+  z-index: 3;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: 80%;
+  transform: translateX(-50%);
+  padding: 0;
+  background: none;
+  box-shadow: none;
+  text-align: center;
+  pointer-events: none;
+  user-select: none;
+  font-family: "Netflix Sans", "Helvetica Neue", Helvetica, Arial, "Hiragino Sans", "Noto Sans JP", sans-serif;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: #fff;
+}
+
+#nfjp-subs[hidden] {
+  display: none !important;
+}
+
+#nfjp-subs .nfjp-ja,
+#nfjp-subs .nfjp-zh {
+  display: block;
+  margin: 0 auto;
+  max-width: 100%;
+  background: none;
+  box-shadow: none;
+  white-space: pre-wrap;
+  text-align: center;
+  line-height: 1.2;
+}
+
+#nfjp-subs .nfjp-ja {
+  font-size: 1em;
+  color: #fff;
+  text-shadow:
+    0 0 1px rgba(0, 0, 0, 0.9),
+    1px 1px 1px rgba(0, 0, 0, 0.45),
+    -1px -1px 1px rgba(0, 0, 0, 0.45),
+    0 1px 1px rgba(0, 0, 0, 0.35);
+}
+
+#nfjp-subs .nfjp-ja:not(:empty) {
+  margin-bottom: 0.15em;
+}
+
+#nfjp-subs .nfjp-zh {
+  margin-top: 0;
+  font-size: 0.75em;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.8);
+  text-shadow:
+    0 0 1px rgba(0, 0, 0, 0.85),
+    1px 1px 1px rgba(0, 0, 0, 0.4),
+    -1px -1px 1px rgba(0, 0, 0, 0.4);
+}
+
+#nfjp-subs .nfjp-cue + .nfjp-cue {
+  margin-top: 0.15em;
+}
+
+#nfjp-subs ruby {
+  ruby-position: over;
+  ruby-align: center;
+}
+
+#nfjp-subs rt {
+  font-size: 0.45em;
+  font-weight: 600;
+  line-height: 1;
+  letter-spacing: 0;
+  color: #fff;
+  opacity: 0.95;
+  background: none;
+}
