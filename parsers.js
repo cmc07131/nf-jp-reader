@@ -177,17 +177,28 @@
     return { text: baseText, ruby: baseRuby + '(' + reading + ')' };
   }
 
-  function regionOrigins(doc) {
-    const origins = new Map();
-    const regions = doc.getElementsByTagNameNS('*', 'region');
-    for (let i = 0; i < regions.length; i++) {
-      const id = attr(regions[i], 'id');
-      const origin = attr(regions[i], 'origin');
-      if (!id || !origin) continue;
-      const match = /(-?\d+(?:\.\d+)?)%\s+(-?\d+(?:\.\d+)?)%/.exec(origin);
-      if (match) origins.set(id, Number(match[2]));
+  function originY(value) {
+    const match = /(-?\d+(?:\.\d+)?)%\s+(-?\d+(?:\.\d+)?)%/.exec(String(value || ''));
+    return match ? Number(match[2]) : null;
+  }
+
+  function cueIsTop(y, align) {
+    if (align === 'before') return true;
+    return y != null && y <= 40;
+  }
+
+  function regionLayout(doc) {
+    const regions = new Map();
+    const nodes = doc.getElementsByTagNameNS('*', 'region');
+    for (let i = 0; i < nodes.length; i++) {
+      const id = attr(nodes[i], 'id');
+      if (!id) continue;
+      regions.set(id, {
+        y: originY(attr(nodes[i], 'origin')),
+        align: String(attr(nodes[i], 'displayAlign') || '').toLowerCase()
+      });
     }
-    return origins;
+    return regions;
   }
 
   function ratesFrom(root) {
@@ -214,7 +225,7 @@
     const rates = ratesFrom(root);
     nfLog('ttml timing', 'tickRate', rates.tickRate || 'none', 'frameRate', rates.frameRate || 'none');
     const roles = rubyMap(doc);
-    const origins = regionOrigins(doc);
+    const regions = regionLayout(doc);
     let paragraphs = Array.from(doc.getElementsByTagNameNS('*', 'p'));
     if (!paragraphs.length) {
       paragraphs = Array.from(doc.getElementsByTagNameNS('*', 'div')).filter(function (element) {
@@ -248,13 +259,17 @@
       const rubyText = clean(rendered.ruby);
       if (!plain) continue;
       const regionId = paragraph.getAttribute('region') || attr(paragraph, 'region');
+      const region = regionId ? regions.get(regionId) : null;
+      const ownY = originY(attr(paragraph, 'origin'));
+      const align = String(attr(paragraph, 'displayAlign') || (region && region.align) || '').toLowerCase();
+      const regionY = ownY != null ? ownY : (region ? region.y : null);
       cues.push({
         start: round3(start),
         end: round3(end),
         text: plain,
         ruby: rubyText && rubyText !== plain ? rubyText : null,
-        regionY: regionId && origins.has(regionId) ? origins.get(regionId) : null,
-        top: regionId && origins.has(regionId) ? origins.get(regionId) <= 40 : false,
+        regionY: regionY,
+        top: cueIsTop(regionY, align),
         sourceIndex: i
       });
     }

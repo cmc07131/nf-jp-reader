@@ -38,6 +38,7 @@
       root.appendChild(el('div', 'nfjp-title', 'NF JP Reader'));
       root.appendChild(slot('nfjp-status'));
       root.appendChild(slot('nfjp-id'));
+      root.appendChild(slot('nfjp-meta'));
       root.appendChild(slot('nfjp-tracks'));
       root.appendChild(slot('nfjp-counts'));
       root.appendChild(slot('nfjp-ja'));
@@ -108,6 +109,10 @@
     const videoId = state && state.videoId ? state.videoId : '—';
     const movieId = state && state.movieId && String(state.movieId) !== String(videoId) ? '  movie ' + state.movieId : '';
     setText('nfjp-id', 'video ' + videoId + movieId);
+    const cacheSource = state && state.cacheSource ? state.cacheSource : '—';
+    const clearedAt = state && state.clearedAt ? state.clearedAt : '—';
+    const clearedReason = state && state.clearedReason ? '  ' + state.clearedReason : '';
+    setText('nfjp-meta', 'source  ' + cacheSource + '\ncleared  ' + clearedAt + clearedReason);
     const tracks = state && state.tracks ? state.tracks : [];
     const shown = tracks.slice(0, 14).map(trackLine);
     if (tracks.length > 14) shown.push('+' + (tracks.length - 14) + ' more');

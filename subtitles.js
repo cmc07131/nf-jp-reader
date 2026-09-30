@@ -12,9 +12,14 @@
     showZh: true,
     furigana: true,
     nudge: 0,
-    fontScale: 1
+    fontScale: 1,
+    followNetflix: false,
+    shade: false,
+    shadeOpacity: 0.5
   };
   let renderKey = '';
+  let mainPairs = [];
+  let forcedPairs = [];
 
   function nfLog() {
     const args = ['[NFJP]'];
@@ -132,21 +137,123 @@
     }
   }
 
-  function chooseLines(time) {
-    const jaMain = settings.showJa ? activeCues(payload && payload.ja, time) : [];
-    const zhMain = settings.showZh ? activeCues(payload && payload.zh, time) : [];
-    const jaForced = activeCues(payload && payload.jaForced, time);
-    const zhForced = activeCues(payload && payload.zhForced, time);
-    let ja = jaMain;
-    let zh = zhMain;
-    if (!jaMain.length && !zhMain.length) {
-      ja = settings.showJa ? jaForced : [];
-      zh = settings.showZh ? zhForced : [];
+  function cuesOf(packet) {
+    return packet && packet.cues ? packet.cues : [];
+  }
+
+  function matchingZh(anchor, zhCues) {
+    const hits = [];
+    for (let i = 0; i < zhCues.length; i++) {
+      const cue = zhCues[i];
+      if (cue.start >= anchor.end) break;
+      const overlap = Math.min(anchor.end, cue.end) - Math.max(anchor.start, cue.start);
+      if (!(overlap > 0)) continue;
+      const duration = cue.end - cue.start;
+      if (overlap > 0.3 || (duration > 0 && overlap > duration * 0.3)) hits.push(cue);
     }
-    // Top is only for an active forced lyric/sign. A TTML region near the top
-    // stays at the bottom. Saved nudge is an offset, not a sticky top mode.
-    const top = jaForced.length > 0 || zhForced.length > 0;
-    return { ja: ja, zh: zh, top: top };
+    const out = [];
+    const seen = {};
+    for (let i = 0; i < hits.length; i++) {
+      const key = String(hits[i].text || '').trim();
+      if (seen[key]) continue;
+      seen[key] = true;
+      out.push(hits[i]);
+    }
+    return out;
+  }
+
+  function buildPairs(jaPacket, zhPacket) {
+    const jaCues = cuesOf(jaPacket);
+    const zhCues = cuesOf(zhPacket).slice().sort(function (a, b) {
+      return a.start - b.start || a.end - b.end;
+    });
+    const pairs = [];
+    for (let i = 0; i < jaCues.length; i++) {
+      pairs.push({ ja: jaCues[i], zh: matchingZh(jaCues[i], zhCues) });
+    }
+    return pairs;
+  }
+
+  function rebuildPairs() {
+    mainPairs = buildPairs(payload && payload.ja, payload && payload.zh);
+    forcedPairs = buildPairs(payload && payload.jaForced, payload && payload.zhForced);
+  }
+
+  function dedupeCues(lists) {
+    const out = [];
+    const seen = {};
+    const flat = [];
+    for (let i = 0; i < lists.length; i++) {
+      const list = lists[i] || [];
+      for (let j = 0; j < list.length; j++) flat.push(list[j]);
+    }
+    flat.sort(function (a, b) { return a.start - b.start || a.end - b.end; });
+    for (let i = 0; i < flat.length; i++) {
+      const key = String(flat[i].text || '').trim();
+      if (seen[key]) continue;
+      seen[key] = true;
+      out.push(flat[i]);
+    }
+    return out;
+  }
+
+  function linesFromPairs(pairs, zhPacket, time) {
+    const active = [];
+    for (let i = 0; i < pairs.length; i++) {
+      const ja = pairs[i].ja;
+      if (time >= ja.start && time < ja.end) active.push(pairs[i]);
+    }
+    if (settings.showJa && active.length) {
+      return {
+        ja: active.map(function (pair) { return pair.ja; }),
+        zh: settings.showZh ? dedupeCues(active.map(function (pair) { return pair.zh; })) : [],
+        forced: false
+      };
+    }
+    if (!settings.showJa && settings.showZh) {
+      const zh = activeCues(zhPacket, time);
+      return { ja: [], zh: zh, forced: false };
+    }
+    if (settings.showJa && settings.showZh) {
+      const zh = activeCues(zhPacket, time);
+      if (zh.length) return { ja: [], zh: zh, forced: false };
+    }
+    return null;
+  }
+
+  function chooseLines(time) {
+    const main = linesFromPairs(mainPairs, payload && payload.zh, time);
+    let lines = main;
+    let fromForced = false;
+    if (!main || (!main.ja.length && !main.zh.length)) {
+      const forced = linesFromPairs(forcedPairs, payload && payload.zhForced, time);
+      if (forced && (forced.ja.length || forced.zh.length)) {
+        lines = forced;
+        fromForced = true;
+      }
+    }
+    if (!lines) lines = { ja: [], zh: [] };
+    let top = false;
+    if (settings.followNetflix) {
+      const shown = lines.ja.concat(lines.zh);
+      if (fromForced && shown.length) top = true;
+      else {
+        for (let i = 0; i < shown.length; i++) {
+          if (shown[i].top) {
+            top = true;
+            break;
+          }
+        }
+      }
+    }
+    return { ja: lines.ja, zh: lines.zh, top: top };
+  }
+
+  function shadeOpacity() {
+    let value = Number(settings.shadeOpacity);
+    if (!Number.isFinite(value)) return 0.5;
+    if (value > 1) value = value / 100;
+    return Math.max(0, Math.min(1, value));
   }
 
   function place(box, root, video, top) {
@@ -155,6 +262,8 @@
     const scale = Number(settings.fontScale) || 1;
     const nudge = Math.max(-0.06, Math.min(0.2, Number(settings.nudge) || 0)) * height;
     box.style.fontSize = (height * 0.032 * scale) + 'px';
+    box.classList.toggle('nfjp-shade', !!settings.shade);
+    box.style.setProperty('--nfjp-shade', String(shadeOpacity()));
     if (top) {
       box.style.top = Math.max(0, height * 0.08 - nudge) + 'px';
       box.style.bottom = 'auto';
@@ -216,6 +325,8 @@
       textKey(lines.zh)
     ].join('~');
     box.hidden = !lines.ja.length && !lines.zh.length;
+    jaEl.hidden = !lines.ja.length;
+    zhEl.hidden = !lines.zh.length;
     if (key !== renderKey) {
       renderKey = key;
       fillLine(jaEl, lines.ja, furiganaOn);
@@ -227,6 +338,7 @@
   globalThis.NFJPSubs = {
     setPayload: function (next) {
       payload = next;
+      rebuildPairs();
       renderKey = '';
     },
     setSettings: function (next) {

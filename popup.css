@@ -1,6 +1,6 @@
 body {
   margin: 0;
-  width: 240px;
+  width: 260px;
   padding: 12px 14px 14px;
   background: #141414;
   color: #fff;
@@ -35,7 +35,8 @@ input[type="range"] {
   vertical-align: middle;
 }
 
-#fontValue {
+#fontValue,
+#shadeValue {
   display: inline-block;
   width: 42px;
   font-weight: 600;

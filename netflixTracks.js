@@ -590,9 +590,20 @@
       nfLog('player walk', Math.round(elapsed) + 'ms', 'nodes', walked.nodes, 'urls', walked.urls.size, 'capped', walked.capped);
     }
 
+    let movieId = null;
+    try {
+      const id = player.getMovieId && player.getMovieId();
+      movieId = id == null ? null : String(id);
+    } catch (e) {
+      movieId = null;
+    }
+
     const fromManifests = [];
     for (let i = 0; i < walked.manifests.length; i++) {
-      const extracted = extractNetflixTracks(walked.manifests[i]);
+      const node = walked.manifests[i];
+      const nodeMovie = node && node.movieId != null ? String(node.movieId) : '';
+      if (movieId && nodeMovie && nodeMovie !== movieId) continue;
+      const extracted = extractNetflixTracks(node);
       for (let t = 0; t < extracted.length; t++) fromManifests.push(extracted[t]);
     }
 
@@ -617,14 +628,6 @@
         };
       })
     };
-
-    let movieId = null;
-    try {
-      const id = player.getMovieId && player.getMovieId();
-      movieId = id == null ? null : String(id);
-    } catch (e) {
-      movieId = null;
-    }
 
     return {
       movieId: movieId,

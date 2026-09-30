@@ -6,6 +6,7 @@ html.nfjp-hide-native .player-timedtext {
   position: absolute;
   left: 50%;
   right: auto;
+  top: auto;
   z-index: 3;
   box-sizing: border-box;
   width: max-content;
@@ -23,6 +24,12 @@ html.nfjp-hide-native .player-timedtext {
   color: #fff;
 }
 
+#nfjp-subs.nfjp-shade {
+  background: rgba(0, 0, 0, var(--nfjp-shade, 0.5));
+  padding: 0.25em 0.6em;
+  border-radius: 6px;
+}
+
 #nfjp-subs[hidden] {
   display: none !important;
 }
@@ -37,6 +44,11 @@ html.nfjp-hide-native .player-timedtext {
   white-space: pre-wrap;
   text-align: center;
   line-height: 1.2;
+}
+
+#nfjp-subs .nfjp-ja[hidden],
+#nfjp-subs .nfjp-zh[hidden] {
+  display: none;
 }
 
 #nfjp-subs .nfjp-ja {
@@ -62,6 +74,11 @@ html.nfjp-hide-native .player-timedtext {
     0 0 1px rgba(0, 0, 0, 0.85),
     1px 1px 1px rgba(0, 0, 0, 0.4),
     -1px -1px 1px rgba(0, 0, 0, 0.4);
+}
+
+#nfjp-subs.nfjp-shade .nfjp-ja,
+#nfjp-subs.nfjp-shade .nfjp-zh {
+  text-shadow: 0 1px 1px rgba(0, 0, 0, 0.35);
 }
 
 #nfjp-subs .nfjp-cue + .nfjp-cue {

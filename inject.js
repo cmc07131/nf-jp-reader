@@ -1,8 +1,8 @@
 /*
  * Page-context capture. Hooks are installed at document_start.
- * Manifest responses are preferred. If a target language has no text URL,
- * the active player track is selected just long enough for Netflix to fill
- * one, then the previous track is restored.
+ * The current video id comes only from /watch/<id>. Manifests are stored by
+ * their own movieId. A manifest for any other id never touches this video.
+ * Parsed ja+zh cues are final until Retry capture.
  */
 (function () {
   'use strict';
@@ -25,21 +25,20 @@
   const originalOpen = XMLHttpRequest.prototype.open;
   const originalSend = XMLHttpRequest.prototype.send;
 
-  const store = {
-    videoId: null,
-    lockedMovieId: null,
-    buckets: { manifest: [], player: [] }
-  };
+  // movieId -> { manifestTracks, playerTracks, manifestAt, playerAt }
+  const manifests = new Map();
+  // videoId -> { final, ja, zh, jaForced, zhForced }
+  const finals = new Map();
 
   let generation = 0;
   let activeId = null;
-  let previousMovieId = null;
-  let pendingManifest = null;
   let lastPosted = {};
   let fetchSeq = 0;
-  let lastUrlSignature = '';
   let downloadToken = 0;
-  let downloadStartedFor = -1;
+  let flight = null;
+  let downloadsOpen = false;
+  let captureMode = 'auto';
+  let cacheWaiter = null;
 
   function watchId() {
     const match = location.pathname.match(/\/watch\/(\d+)/);
@@ -48,83 +47,87 @@
 
   function post(message) {
     message.source = 'NFJP-PAGE';
-    if (message.type) lastPosted[message.type] = message;
+    if (message.type && (!message.videoId || message.videoId === activeId || message.videoId === watchId())) {
+      lastPosted[message.type] = message;
+    }
     window.postMessage(message, '*');
   }
 
-  function mergedTracks() {
-    // A manifest for this episode is the only URL source. Player-session URLs
-    // from the previous title must not be merged in; they are already expired.
-    if (store.buckets.manifest.length) return store.buckets.manifest.slice();
-    return store.buckets.player.slice();
+  function ensure(movieId) {
+    const key = String(movieId);
+    let entry = manifests.get(key);
+    if (!entry) {
+      entry = { manifestTracks: null, playerTracks: null, manifestAt: 0, playerAt: 0 };
+      manifests.set(key, entry);
+    }
+    return entry;
   }
 
-  function isStaleMovie(movieId) {
-    if (!movieId || !previousMovieId) return false;
-    return movieId === previousMovieId && movieId !== activeId;
+  function manifestMovieId(manifest, parent) {
+    const objs = [manifest, parent];
+    if (manifest && manifest.result) objs.push(manifest.result);
+    if (parent && parent.result) objs.push(parent.result);
+    for (let pass = 0; pass < 2; pass++) {
+      const field = pass === 0 ? 'movieId' : 'videoId';
+      for (let i = 0; i < objs.length; i++) {
+        const obj = objs[i];
+        if (!obj || typeof obj !== 'object') continue;
+        if (obj[field] != null && obj[field] !== '') return String(obj[field]);
+      }
+    }
+    return '';
   }
 
-  function manifestMatchesPlayback(movieId) {
-    if (!movieId) return true;
-    if (isStaleMovie(movieId)) return false;
-    if (movieId === activeId) return true;
-    const playerMovie = NF.peekMovieId();
-    if (playerMovie && movieId === playerMovie && !isStaleMovie(playerMovie)) return true;
-    if (!playerMovie) return true;
-    return false;
+  function rawTrackCount(manifest) {
+    if (!manifest) return 0;
+    const raw = manifest.timedtexttracks || manifest.textTracks;
+    return Array.isArray(raw) ? raw.length : 0;
   }
 
-  function onManifest(manifest, via) {
+  function hasJaOrZh(tracks) {
+    const picked = NF.pickTargets(tracks || []);
+    return !!(picked.ja || picked.zh || picked.jaForced || picked.zhForced);
+  }
+
+  function isFinal(id) {
+    const saved = id && finals.get(String(id));
+    return !!(saved && saved.final);
+  }
+
+  function logManifest(movieId, trackCount, action, via) {
+    nfLog('manifest', 'movieId', movieId || '?', 'url', watchId() || 'none', 'tracks', trackCount, 'action', action, 'via', via);
+  }
+
+  function onManifest(manifest, parent, via) {
     try {
-      const id = watchId();
-      const movieId = manifest && manifest.movieId != null ? String(manifest.movieId) : '';
-      const count = manifest && (manifest.timedtexttracks || manifest.textTracks || []).length;
-      nfLog('manifest via', via, 'movieId', movieId || '?', 'watch', id || 'none', 'raw tracks', count || 0);
-      if (!id || id !== activeId || store.videoId !== id) return;
-      if (movieId && isStaleMovie(movieId)) {
-        nfLog('drop previous episode manifest', movieId);
+      const movieId = manifestMovieId(manifest, parent);
+      const rawCount = rawTrackCount(manifest);
+      if (!rawCount) {
+        logManifest(movieId, 0, 'ignored', via);
         return;
       }
-      if (movieId && !manifestMatchesPlayback(movieId)) {
-        pendingManifest = manifest;
-        nfLog('hold manifest until it matches this playback', movieId, 'player', NF.peekMovieId());
-        return;
-      }
-      if (movieId) store.lockedMovieId = movieId;
       const tracks = NF.extractNetflixTracks(manifest);
-      nfLog('manifest normalized', tracks.length, NF.summarizeTracks(tracks));
-      store.buckets.manifest = tracks;
-      store.buckets.player = [];
-      publishTracks();
-      const signature = urlSignature(tracks);
-      if (signature && signature !== lastUrlSignature) {
-        lastUrlSignature = signature;
-        nfLog('new manifest urls, downloading', activeId);
-        const gen = generation;
-        const id = activeId;
-        downloadStartedFor = gen;
-        const token = ++downloadToken;
-        runDownload(gen, id, Date.now(), token).catch(function (err) {
-          nfLog('capture error', err && err.stack ? err.stack : err);
-          post({ type: 'STATUS', videoId: id, status: 'capture error' });
-        });
+      if (!movieId || !hasJaOrZh(tracks)) {
+        logManifest(movieId, tracks.length, 'ignored', via);
+        return;
       }
+      const entry = ensure(movieId);
+      const incoming = urlSignature(tracks);
+      const existing = urlSignature(entry.manifestTracks || []);
+      if (entry.manifestTracks && !incoming && existing) {
+        logManifest(movieId, tracks.length, 'ignored', via);
+        return;
+      }
+      entry.manifestTracks = tracks;
+      entry.manifestAt = Date.now();
+      logManifest(movieId, tracks.length, 'stored', via);
+      if (movieId !== String(watchId() || '')) return;
+      if (!downloadsOpen || isFinal(movieId) || captureMode === 'skip') return;
+      publishTracks(movieId);
+      ensureDownload(movieId, Date.now(), false);
     } catch (e) {
       nfLog('manifest handler failed', e && e.stack ? e.stack : e);
     }
-  }
-
-  function applyPendingManifest() {
-    if (!pendingManifest) return;
-    const movieId = pendingManifest.movieId != null ? String(pendingManifest.movieId) : '';
-    if (movieId && isStaleMovie(movieId)) {
-      pendingManifest = null;
-      return;
-    }
-    if (movieId && !manifestMatchesPlayback(movieId)) return;
-    const manifest = pendingManifest;
-    pendingManifest = null;
-    onManifest(manifest, 'held');
   }
 
   function ingestManifestText(text, via) {
@@ -140,18 +143,30 @@
       return;
     }
     const manifest = NF.pluckManifest(data);
-    if (manifest) onManifest(manifest, via);
+    if (manifest) onManifest(manifest, data, via);
     else nfLog(via, 'timedtexttracks string was not a manifest object');
   }
 
-  function publishTracks() {
-    if (!activeId) return;
-    const tracks = mergedTracks();
+  function tracksFor(id) {
+    const entry = manifests.get(String(id));
+    if (!entry) return [];
+    const manifestSig = urlSignature(entry.manifestTracks || []);
+    const playerSig = urlSignature(entry.playerTracks || []);
+    if (manifestSig && (!playerSig || entry.manifestAt >= entry.playerAt)) return entry.manifestTracks;
+    if (playerSig) return entry.playerTracks;
+    if (entry.manifestTracks && entry.manifestTracks.length) return entry.manifestTracks;
+    return entry.playerTracks || [];
+  }
+
+  function publishTracks(id) {
+    if (!id || String(id) !== String(watchId() || '')) return;
+    const tracks = tracksFor(id);
+    if (!tracks.length) return;
     const picked = NF.pickTargets(tracks);
     post({
       type: 'TRACKS',
-      videoId: activeId,
-      movieId: store.lockedMovieId || NF.peekMovieId(),
+      videoId: String(id),
+      movieId: String(id),
       tracks: tracks.map(NF.publicTrack),
       ja: NF.targetMeta(picked.ja, NF.jaRank, 0),
       zh: NF.targetMeta(picked.zh, NF.zhRank, 1),
@@ -173,7 +188,7 @@
     const data = originalParse.apply(this, arguments);
     try {
       const manifest = NF.pluckManifest(data);
-      if (manifest) onManifest(manifest, 'JSON.parse');
+      if (manifest) onManifest(manifest, data, 'JSON.parse');
     } catch (e) {
       nfLog('JSON.parse hook failed', e && e.message ? e.message : e);
     }
@@ -284,7 +299,7 @@
             if (typeof this.response === 'object' && this.response && !(this.response instanceof Blob)) {
               const manifest = NF.pluckManifest(this.response);
               if (manifest) {
-                onManifest(manifest, 'xhr');
+                onManifest(manifest, this.response, 'xhr');
                 return;
               }
             }
@@ -441,15 +456,14 @@
       nfLog('setTimedTextTrack failed', e && e.message ? e.message : e);
       return;
     }
-    const watchAtStart = activeId;
+    const watchAtStart = watchId();
     try {
       for (let i = 0; i < 20; i++) {
-        if (activeId !== watchAtStart) break;
+        if (watchId() !== watchAtStart) break;
         await sleep(250);
         const again = NF.scanPlayer();
-        if (!again || isStaleMovie(again.movieId)) continue;
-        store.buckets.player = again.tracks;
-        if (again.movieId && !isStaleMovie(again.movieId)) store.lockedMovieId = again.movieId;
+        if (!again || !again.movieId || String(again.movieId) !== String(watchAtStart)) continue;
+        rememberPlayer(String(again.movieId), again.tracks);
         const hit = NF.pickTargets(again.tracks);
         const japanese = NF.jaRank(track.language) >= 0;
         const candidate = track.isForced
@@ -478,16 +492,34 @@
       if (!track || !track.downloadUrl) return '';
       return [track.language, track.isCC ? 'cc' : 'full', track.isForced ? 'f' : 'm', track.downloadUrl].join(':');
     }
-    return sig(picked.ja) + '||' + sig(picked.zh);
+    const value = sig(picked.ja) + '||' + sig(picked.zh);
+    return value === '||' ? '' : value;
   }
 
-  function freshPick() {
-    const fromPlayer = NF.pickTargets(store.buckets.player);
-    const fromManifest = NF.pickTargets(store.buckets.manifest);
+  function rememberPlayer(movieId, tracks) {
+    if (!movieId || !hasJaOrZh(tracks)) return false;
+    const entry = ensure(movieId);
+    const next = urlSignature(tracks);
+    const prev = urlSignature(entry.playerTracks || []);
+    if (entry.playerTracks && next === prev) return false;
+    entry.playerTracks = tracks;
+    entry.playerAt = Date.now();
+    return true;
+  }
+
+  function freshPick(id) {
+    const entry = manifests.get(String(id)) || { manifestAt: 0, playerAt: 0 };
+    const fromPlayer = NF.pickTargets(entry.playerTracks || []);
+    const fromManifest = NF.pickTargets(entry.manifestTracks || []);
+    const playerNewer = (entry.playerAt || 0) >= (entry.manifestAt || 0);
     function choose(key) {
       const playerTrack = fromPlayer[key];
+      const manifestTrack = fromManifest[key];
+      if (playerTrack && playerTrack.downloadUrl && manifestTrack && manifestTrack.downloadUrl) {
+        return playerNewer ? playerTrack : manifestTrack;
+      }
       if (playerTrack && playerTrack.downloadUrl) return playerTrack;
-      return fromManifest[key];
+      return manifestTrack;
     }
     return {
       ja: choose('ja'),
@@ -511,15 +543,25 @@
     return side('ja', ja) + ' · ' + side('zh', zh);
   }
 
+  function stillCurrent(gen, token, id) {
+    return gen === generation && token === downloadToken && String(id) === String(watchId() || '');
+  }
+
+  function keepParsed(prev, next) {
+    if (!cuesOf(next) && cuesOf(prev)) return prev;
+    return next;
+  }
+
   async function runDownload(gen, id, started, token) {
-    if (gen !== generation || token !== downloadToken) return;
-    const picked = NF.pickTargets(mergedTracks());
-    nfLog('download decision', 'ja', describe(picked.ja), 'zh', describe(picked.zh));
+    if (!stillCurrent(gen, token, id)) return;
+    if (isFinal(id) && captureMode !== 'retry') return;
+    const picked = freshPick(id);
+    nfLog('download decision', 'url', id, 'ja', describe(picked.ja), 'zh', describe(picked.zh));
     post({ type: 'STATUS', videoId: id, status: 'downloading' });
     let ja = await downloadLanguage(gen, token, picked.ja, 'ja');
-    if (gen !== generation || token !== downloadToken) return;
+    if (!stillCurrent(gen, token, id)) return;
     let zh = await downloadLanguage(gen, token, picked.zh, 'zh');
-    if (gen !== generation || token !== downloadToken) return;
+    if (!stillCurrent(gen, token, id)) return;
     const jaBad = !cuesOf(ja);
     const zhBad = !cuesOf(zh);
     if (jaBad || zhBad) {
@@ -528,125 +570,222 @@
         post({ type: 'STATUS', videoId: id, status: outcomeStatus(ja, zh) });
         await sleep(remain);
       }
-      if (gen !== generation || token !== downloadToken) return;
+      if (!stillCurrent(gen, token, id)) return;
       nfLog('still 0 cues after 10s, selecting tracks to refresh urls');
       post({ type: 'STATUS', videoId: id, status: 'reloading track urls' });
       if (jaBad && picked.ja && !picked.ja.isImage) await forceTrackUrl(picked.ja);
-      if (gen !== generation || token !== downloadToken) return;
+      if (!stillCurrent(gen, token, id)) return;
       if (zhBad && picked.zh && !picked.zh.isImage) await forceTrackUrl(picked.zh);
-      if (gen !== generation || token !== downloadToken) return;
-      const again = freshPick();
+      if (!stillCurrent(gen, token, id)) return;
+      const again = freshPick(id);
       if (jaBad) ja = await downloadLanguage(gen, token, again.ja, 'ja');
-      if (gen !== generation || token !== downloadToken) return;
+      if (!stillCurrent(gen, token, id)) return;
       if (zhBad) zh = await downloadLanguage(gen, token, again.zh, 'zh');
-      if (gen !== generation || token !== downloadToken) return;
+      if (!stillCurrent(gen, token, id)) return;
     }
     if (ja) ja.fallback = !!(ja.isCC || NF.jaRank(ja.language) > 0);
     if (zh) zh.fallback = !!(zh.isCC || NF.zhRank(zh.language) > 1);
+    const prev = finals.get(String(id));
+    if (prev) {
+      ja = keepParsed(prev.ja, ja);
+      zh = keepParsed(prev.zh, zh);
+    }
     publishParsed(id, ja, zh, null, null);
-    const finalPick = freshPick();
+    if (!stillCurrent(gen, token, id)) return;
+    const finalPick = freshPick(id);
     const forced = await Promise.all([
       downloadLanguage(gen, token, finalPick.jaForced, 'ja-forced'),
       downloadLanguage(gen, token, finalPick.zhForced, 'zh-forced')
     ]);
-    if (gen !== generation || token !== downloadToken) return;
-    if (cuesOf(forced[0]) || cuesOf(forced[1])) publishParsed(id, ja, zh, forced[0], forced[1]);
+    if (!stillCurrent(gen, token, id)) return;
+    const saved = finals.get(String(id));
+    const jaForced = keepParsed(saved && saved.jaForced, forced[0]);
+    const zhForced = keepParsed(saved && saved.zhForced, forced[1]);
+    if (cuesOf(jaForced) || cuesOf(zhForced)) publishParsed(id, ja, zh, jaForced, zhForced);
   }
 
   function publishParsed(id, ja, zh, jaForced, zhForced) {
+    if (String(id) !== String(watchId() || '')) return;
+    const both = cuesOf(ja) && cuesOf(zh);
+    finals.set(String(id), {
+      final: both,
+      ja: ja,
+      zh: zh,
+      jaForced: cuesOf(jaForced) ? jaForced : null,
+      zhForced: cuesOf(zhForced) ? zhForced : null
+    });
+    if (both) captureMode = 'skip';
     const status = outcomeStatus(ja, zh);
+    const entry = manifests.get(String(id));
     post({
       type: 'PARSED',
-      videoId: id,
-      movieId: store.lockedMovieId || NF.peekMovieId(),
-      source: store.buckets.manifest.length ? 'manifest' : 'player',
+      videoId: String(id),
+      movieId: String(id),
+      source: entry && entry.manifestTracks && entry.manifestTracks.length ? 'manifest' : 'player',
+      cacheSource: 'network',
       capturedAt: new Date().toISOString(),
-      tracks: mergedTracks().map(NF.publicTrack),
+      tracks: tracksFor(id).map(NF.publicTrack),
       ja: ja,
       zh: zh,
       jaForced: cuesOf(jaForced) ? jaForced : null,
       zhForced: cuesOf(zhForced) ? zhForced : null,
       status: status
     });
-    nfLog('capture done', id, status);
-    post({ type: 'STATUS', videoId: id, status: status });
+    nfLog('capture done', id, status, both ? 'final' : 'partial');
+    post({ type: 'STATUS', videoId: String(id), status: status });
   }
 
-  async function runCapture(gen, id) {
-    const started = Date.now();
-    let lastSummary = '';
-    let loggedStale = false;
-    nfLog('capture start', id);
-    post({ type: 'STATUS', videoId: id, status: 'waiting for subtitles' });
-
-    while (gen === generation && Date.now() - started < 8000 && !store.buckets.manifest.length) {
-      applyPendingManifest();
-      if (store.buckets.manifest.length) break;
-      let scan = null;
-      try { scan = NF.scanPlayer(); } catch (e) {
-        nfLog('scanPlayer failed', e && e.stack ? e.stack : e);
-      }
-      if (scan && isStaleMovie(scan.movieId)) {
-        if (!loggedStale) {
-          loggedStale = true;
-          nfLog('player still on previous movie', scan.movieId);
-        }
-      } else if (scan && scan.movieId && scan.movieId !== previousMovieId) {
-        store.buckets.player = scan.tracks;
-        if (!store.lockedMovieId) store.lockedMovieId = scan.movieId;
-        const summary = NF.summarizeTracks(scan.tracks);
-        if (summary !== lastSummary) {
-          lastSummary = summary;
-          nfLog('tracks', summary);
-          publishTracks();
-        }
-        if (urlSignature(scan.tracks)) break;
-      }
-      await sleep(300);
-    }
-
-    if (gen !== generation) {
-      nfLog('capture cancelled', id);
-      return;
-    }
-    if (downloadStartedFor === gen) return;
-    downloadStartedFor = gen;
-    const token = ++downloadToken;
-    await runDownload(gen, id, started, token);
-  }
-
-  function retryCapture() {
-    if (!activeId) return;
-    const id = activeId;
-    generation++;
+  function ensureDownload(id, startedAt, force) {
+    if (String(id) !== String(watchId() || '')) return;
+    if (isFinal(id) && captureMode !== 'retry') return;
+    if (captureMode === 'skip' && !force) return;
+    const picked = freshPick(id);
+    const pickedSig = urlSignature([picked.ja, picked.zh, picked.jaForced, picked.zhForced].filter(Boolean));
+    if (!force && !pickedSig) return;
+    if (!force && flight && flight.id === String(id) && flight.signature === pickedSig) return;
     const gen = generation;
-    downloadStartedFor = gen;
-    store.buckets.player = [];
-    nfLog('retry capture', id);
-    post({ type: 'STATUS', videoId: id, status: 'retrying capture' });
     const token = ++downloadToken;
-    runDownload(gen, id, Date.now(), token).catch(function (err) {
+    flight = { id: String(id), token: token, signature: pickedSig };
+    runDownload(gen, id, startedAt || Date.now(), token).catch(function (err) {
       nfLog('capture error', err && err.stack ? err.stack : err);
       post({ type: 'STATUS', videoId: id, status: 'capture error' });
     });
   }
 
+  async function runCapture(gen, id) {
+    const started = Date.now();
+    let lastSummary = '';
+    nfLog('capture start', id);
+    post({ type: 'STATUS', videoId: id, status: 'waiting for subtitles' });
+
+    while (gen === generation && String(watchId() || '') === String(id) && Date.now() - started < 8000) {
+      if (isFinal(id) || captureMode === 'skip') return;
+      if (urlSignature(tracksFor(id))) break;
+      let scan = null;
+      try { scan = NF.scanPlayer(); } catch (e) {
+        nfLog('scanPlayer failed', e && e.stack ? e.stack : e);
+      }
+      if (scan && scan.movieId && rememberPlayer(String(scan.movieId), scan.tracks)) {
+        if (String(scan.movieId) === String(id)) {
+          const summary = NF.summarizeTracks(scan.tracks);
+          if (summary !== lastSummary) {
+            lastSummary = summary;
+            nfLog('tracks', summary);
+            publishTracks(id);
+          }
+        }
+      }
+      if (urlSignature(tracksFor(id))) break;
+      await sleep(300);
+    }
+
+    if (gen !== generation || String(watchId() || '') !== String(id)) {
+      nfLog('capture cancelled', id);
+      return;
+    }
+    if (isFinal(id) || captureMode === 'skip') return;
+    if (flight && flight.id === String(id) && flight.token === downloadToken) return;
+    ensureDownload(id, started, true);
+  }
+
+  function retryCapture(requestedId) {
+    const id = watchId();
+    if (!id) return;
+    if (requestedId && String(requestedId) !== String(id)) {
+      nfLog('retry ignored', 'url', id, 'request', requestedId);
+      return;
+    }
+    captureMode = 'retry';
+    downloadsOpen = true;
+    finals.delete(String(id));
+    flight = null;
+    nfLog('retry capture', id);
+    post({ type: 'STATUS', videoId: id, status: 'retrying capture' });
+    ensureDownload(id, Date.now(), true);
+  }
+
+  function waitForCache(id) {
+    return new Promise(function (resolve) {
+      const timer = setTimeout(function () {
+        if (cacheWaiter && cacheWaiter.id === String(id)) cacheWaiter = null;
+        resolve('timeout');
+      }, 800);
+      cacheWaiter = {
+        id: String(id),
+        resolve: function (kind) {
+          clearTimeout(timer);
+          if (cacheWaiter && cacheWaiter.id === String(id)) cacheWaiter = null;
+          resolve(kind);
+        }
+      };
+    });
+  }
+
+  function onCacheNotice(data) {
+    const id = data.videoId != null ? String(data.videoId) : '';
+    if (!id || id !== String(activeId || '')) {
+      if (cacheWaiter && cacheWaiter.id === id) cacheWaiter.resolve('miss');
+      return;
+    }
+    if (data.type === 'CACHED') {
+      if (captureMode === 'retry') return;
+      const prev = finals.get(id);
+      if (prev) prev.final = true;
+      else finals.set(id, { final: true });
+      captureMode = 'skip';
+      downloadToken++;
+      flight = null;
+      nfLog('cache hit, skip capture', id, 'ja', data.jaCues || 0, 'zh', data.zhCues || 0);
+      if (cacheWaiter && cacheWaiter.id === id) cacheWaiter.resolve('hit');
+      return;
+    }
+    if (cacheWaiter && cacheWaiter.id === id) cacheWaiter.resolve('miss');
+  }
+
+  function logClear(reason) {
+    nfLog('state cleared', reason, new Error('state cleared: ' + reason).stack);
+  }
+
+  function republishFinal(id) {
+    const saved = finals.get(String(id));
+    if (!saved || !cuesOf(saved.ja) || !cuesOf(saved.zh)) return;
+    publishParsed(id, saved.ja, saved.zh, saved.jaForced, saved.zhForced);
+  }
+
   function startWatch(id) {
     const gen = ++generation;
-    previousMovieId = store.lockedMovieId;
+    downloadToken++;
+    const previousId = activeId;
     activeId = id;
-    store.videoId = id;
-    store.lockedMovieId = null;
-    store.buckets = { manifest: [], player: [] };
-    pendingManifest = null;
+    downloadsOpen = false;
+    captureMode = 'auto';
+    flight = null;
     lastPosted = {};
-    lastUrlSignature = '';
-    downloadStartedFor = -1;
+    if (previousId && previousId !== id) logClear('url ' + previousId + ' -> ' + id);
     nfLog('watch', id, 'generation', gen);
-    runCapture(gen, id).catch(function (e) {
-      nfLog('capture error', e && e.stack ? e.stack : e);
-      post({ type: 'STATUS', videoId: id, status: 'capture error' });
-      post({ type: 'ERROR', videoId: id, error: String(e && e.message ? e.message : e) });
+    if (isFinal(id)) {
+      captureMode = 'skip';
+      nfLog('memory final, skip capture', id);
+      Promise.resolve().then(function () {
+        if (generation === gen && watchId() === id) republishFinal(id);
+      });
+      return;
+    }
+    waitForCache(id).then(function (decision) {
+      if (gen !== generation || watchId() !== id) return;
+      if (captureMode === 'retry') return;
+      if (decision === 'hit' || isFinal(id)) {
+        captureMode = 'skip';
+        nfLog('cache hit, skip capture', id);
+        return;
+      }
+      downloadsOpen = true;
+      if (manifests.has(String(id))) publishTracks(id);
+      runCapture(gen, id).catch(function (e) {
+        nfLog('capture error', e && e.stack ? e.stack : e);
+        post({ type: 'STATUS', videoId: id, status: 'capture error' });
+        post({ type: 'ERROR', videoId: id, error: String(e && e.message ? e.message : e) });
+      });
     });
   }
 
@@ -654,10 +793,17 @@
     const id = watchId();
     if (id === activeId) return;
     if (!id) {
-      if (activeId) nfLog('left watch page');
-      activeId = null;
-      generation++;
-      post({ type: 'STATUS', videoId: null, status: 'not on a watch page' });
+      if (activeId) {
+        logClear('url ' + activeId + ' -> none');
+        generation++;
+        downloadToken++;
+        downloadsOpen = false;
+        captureMode = 'auto';
+        flight = null;
+        nfLog('left watch page', activeId);
+        activeId = null;
+        post({ type: 'STATUS', videoId: null, status: 'not on a watch page' });
+      }
       return;
     }
     startWatch(id);
@@ -676,7 +822,7 @@
     return result;
   };
   window.addEventListener('popstate', checkLocation);
-  setInterval(checkLocation, 500);
+  setInterval(checkLocation, 1000);
 
   window.addEventListener('message', function (event) {
     if (event.source !== window) return;
@@ -686,11 +832,16 @@
       seekSeconds(data.seconds);
       return;
     }
+    if (data.type === 'CACHED' || data.type === 'CACHE_MISS') {
+      onCacheNotice(data);
+      return;
+    }
     if (data.type === 'RETRY') {
-      retryCapture();
+      retryCapture(data.videoId);
       return;
     }
     if (data.type !== 'HELLO') return;
+    if (cacheWaiter || captureMode === 'skip') return;
     const types = Object.keys(lastPosted);
     if (!types.length) {
       post({ type: 'STATUS', videoId: activeId, status: activeId ? 'waiting for subtitles' : 'not on a watch page' });
