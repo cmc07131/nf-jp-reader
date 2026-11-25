@@ -29,6 +29,10 @@
   let blockNetwork = false;
   let watchGen = 0;
   let dbPromise = null;
+  let lastNudgeAt = 0;
+  let translateGen = 0;
+  let translateJob = null;
+  let autoTranslateId = '';
 
   function nfLog() {
     const args = ['[NFJP]'];
@@ -127,18 +131,19 @@
     }).then(function (out) {
       if (!cueCount(out.ja) || !cueCount(out.zh)) return null;
       const meta = out.meta || {};
+      const translated = !!(out.zh && out.zh.translated);
       return {
         videoId: String(id),
         movieId: meta.movieId || null,
         source: 'cache',
-        cacheSource: 'cache',
+        cacheSource: translated ? 'translated' : 'cache',
         capturedAt: meta.capturedAt || null,
         tracks: meta.tracks || [],
         ja: out.ja,
         zh: out.zh,
         jaForced: cueCount(out['ja-forced']) ? out['ja-forced'] : null,
         zhForced: cueCount(out['zh-forced']) ? out['zh-forced'] : null,
-        status: meta.status || statusFrom(out.ja, out.zh)
+        status: meta.status || (statusFrom(out.ja, out.zh) + (translated ? ' · translated' : ''))
       };
     });
   }
@@ -158,7 +163,7 @@
           movieId: next.movieId || null,
           tracks: next.tracks || [],
           capturedAt: next.capturedAt || new Date().toISOString(),
-          status: statusFrom(next.ja, next.zh)
+          status: statusFrom(next.ja, next.zh) + (next.zh && next.zh.translated ? ' · translated' : '')
         }, cueKey(id, 'meta'));
         tx.oncomplete = function () { resolve(); };
         tx.onerror = function () { reject(tx.error); };
@@ -203,6 +208,138 @@
     refreshChrome();
   }
 
+  function jaOnly() {
+    return !!(payload && videoId && String(payload.videoId) === String(videoId) && cueCount(payload.ja) && !cueCount(payload.zh));
+  }
+
+  function sendTranslateBatch(lines) {
+    return new Promise(function (resolve, reject) {
+      chrome.runtime.sendMessage({ type: 'NFJP_TRANSLATE_LINES', lines: lines }, function (response) {
+        const error = chrome.runtime.lastError;
+        if (error) {
+          reject(new Error(error.message));
+          return;
+        }
+        if (!response || !response.ok || !Array.isArray(response.lines)) {
+          reject(new Error((response && response.error) || 'translation failed'));
+          return;
+        }
+        resolve(response.lines);
+      });
+    });
+  }
+
+  function applyTranslation(gen, id, jaCues, translated) {
+    if (gen !== translateGen || String(videoId) !== id || !payload || String(payload.videoId) !== id) {
+      nfLog('translate dropped', id, 'stale');
+      return { ok: false, error: 'stale' };
+    }
+    if (cueCount(payload.zh)) {
+      nfLog('translate skipped, zh already present', id);
+      return { ok: true, already: true };
+    }
+    const cues = [];
+    for (let i = 0; i < jaCues.length; i++) {
+      const text = String(translated[i] || '').trim();
+      if (!text) continue;
+      cues.push({
+        start: jaCues[i].start,
+        end: jaCues[i].end,
+        text: text,
+        ruby: null,
+        top: false
+      });
+    }
+    if (!cues.length) {
+      statusText = statusFrom(payload.ja, payload.zh) + ' · translation empty';
+      refreshChrome();
+      nfLog('translate empty', id);
+      return { ok: false, error: 'empty' };
+    }
+    payload.zh = { language: 'zh-Hant', translated: true, cues: cues };
+    cacheSource = 'translated';
+    blockNetwork = true;
+    statusText = statusFrom(payload.ja, payload.zh) + ' · translated';
+    publishPayload();
+    nfLog('translate done', id, 'zh cues', cues.length);
+    saveFinal(payload).then(function () {
+      nfLog('content: cached', id, 'ja', cueCount(payload.ja), 'zh', cues.length, 'translated');
+    }).catch(function (e) {
+      nfLog('content: cache write failed', e && e.message ? e.message : e);
+    });
+    window.postMessage({
+      source: 'NFJP-CS',
+      type: 'TRANSLATED',
+      videoId: id,
+      jaCues: cueCount(payload.ja),
+      zhCues: cues.length
+    }, '*');
+    return { ok: true, cues: cues.length };
+  }
+
+  function runTranslation(reason, gen, id, jaCues) {
+    const total = jaCues.length;
+    const translated = new Array(total);
+    let offset = 0;
+    statusText = 'ja cues ' + total + ' · translating';
+    refreshChrome();
+    nfLog('translate start', id, total, reason);
+
+    function step() {
+      if (gen !== translateGen || String(videoId) !== id) {
+        nfLog('translate dropped', id, 'stale');
+        return Promise.resolve({ ok: false, error: 'stale' });
+      }
+      if (offset >= total) return Promise.resolve(applyTranslation(gen, id, jaCues, translated));
+      const start = offset;
+      const end = Math.min(total, offset + 30);
+      const batch = [];
+      for (let i = start; i < end; i++) batch.push(jaCues[i].text || '');
+      offset = end;
+      statusText = 'ja cues ' + total + ' · translating ' + end + '/' + total;
+      refreshChrome();
+      return sendTranslateBatch(batch).then(function (lines) {
+        for (let i = 0; i < batch.length; i++) translated[start + i] = lines[i] || '';
+        return step();
+      });
+    }
+
+    return step().catch(function (err) {
+      const message = String(err && err.message ? err.message : err);
+      nfLog('translate failed', id, message);
+      if (gen === translateGen && String(videoId) === id) {
+        const count = cueCount(payload && payload.ja);
+        if (message === 'download') statusText = 'ja cues ' + count + ' · open the popup and click Add Traditional Chinese';
+        else if (message === 'unavailable') statusText = 'ja cues ' + count + ' · on-device translation unavailable';
+        else statusText = statusFrom(payload && payload.ja, payload && payload.zh) + ' · translation failed';
+        refreshChrome();
+      }
+      return { ok: false, error: message };
+    });
+  }
+
+  function translateCurrent(reason) {
+    if (translateJob) return translateJob;
+    if (!payload || !videoId || String(payload.videoId) !== String(videoId) || !cueCount(payload.ja)) {
+      return Promise.resolve({ ok: false, error: 'no-ja' });
+    }
+    if (cueCount(payload.zh)) return Promise.resolve({ ok: true, already: true });
+    const gen = translateGen;
+    const id = String(videoId);
+    const jaCues = payload.ja.cues.slice();
+    translateJob = runTranslation(reason, gen, id, jaCues).finally(function () {
+      translateJob = null;
+    });
+    return translateJob;
+  }
+
+  function maybeAutoTranslate() {
+    if (!settings.showZh || translateJob || !jaOnly()) return;
+    if (autoTranslateId === String(videoId)) return;
+    autoTranslateId = String(videoId);
+    translateCurrent('auto');
+  }
+
   function refreshChrome() {
     const overlay = globalThis.NFJPOverlay;
     if (!overlay) return;
@@ -217,6 +354,8 @@
     if (id === videoId) return;
     const previousId = videoId;
     const gen = ++watchGen;
+    translateGen++;
+    autoTranslateId = '';
     videoId = id;
     blockNetwork = false;
     if (previousId && previousId !== id) logClear('url ' + previousId + ' -> ' + (id || 'none'));
@@ -241,7 +380,7 @@
     }
     if (gen !== watchGen || watchIdFrom(location.href) !== id) return;
     if (cached) {
-      cacheSource = 'cache';
+      cacheSource = cached.zh && cached.zh.translated ? 'translated' : 'cache';
       blockNetwork = true;
       payload = cached;
       statusText = cached.status || statusFrom(cached.ja, cached.zh);
@@ -297,6 +436,8 @@
     if (!videoId) return;
     const id = videoId;
     watchGen++;
+    translateGen++;
+    autoTranslateId = '';
     blockNetwork = false;
     statusText = 'retrying capture';
     refreshChrome();
@@ -312,6 +453,10 @@
     const data = event.data;
     if (!data || data.source !== 'NFJP-PAGE') return;
     if (data.type === 'FETCH_TEXT') return;
+    if (data.type === 'NUDGE') {
+      nudgeBy(data.direction);
+      return;
+    }
 
     if (data.videoId && videoId && String(data.videoId) !== String(videoId)) {
       nfLog('content: ignore stale message', data.type, data.videoId);
@@ -319,6 +464,10 @@
     }
 
     if (data.type === 'STATUS') {
+      if (translateJob) {
+        nfLog('content: ignore status during translation', data.status);
+        return;
+      }
       const settled = cueCount(payload && payload.ja) && cueCount(payload && payload.zh);
       if (settled && (blockNetwork || /missing|parse failed/.test(data.status || ''))) {
         nfLog('content: ignore status, cues already parsed', data.status);
@@ -402,6 +551,7 @@
           nfLog('content: cache write failed', e && e.message ? e.message : e);
         });
       }
+      maybeAutoTranslate();
       return;
     }
 
@@ -444,6 +594,7 @@
     }
     refreshChrome();
     nfLog('content: settings', settings.enabled ? 'on' : 'off', 'ja', settings.showJa, 'zh', settings.showZh, 'furigana', settings.furigana, 'debug', settings.debug, 'shade', !!settings.shade, 'follow', !!settings.followNetflix);
+    maybeAutoTranslate();
   }
 
   function saveSettings() {
@@ -504,21 +655,35 @@
     return tag === 'INPUT' || tag === 'TEXTAREA' || target.isContentEditable;
   }
 
-  document.addEventListener('keydown', function (event) {
+  function nudgeBy(direction) {
+    const now = Date.now();
+    if (now - lastNudgeAt < 80) return;
+    if (!videoId && !/\/watch\/\d+/.test(location.pathname)) return;
+    lastNudgeAt = now;
+    const step = direction > 0 ? 0.04 : -0.04;
+    settings.nudge = Math.max(-0.06, Math.min(0.2, Math.round(((Number(settings.nudge) || 0) + step) * 1000) / 1000));
+    nfLog('nudge', settings.nudge);
+    saveSettings();
+    applySettings(settings);
+  }
+
+  window.addEventListener('keydown', function (event) {
     if (typingTarget(event)) return;
-    if (!videoId) return;
+    if (!videoId && !/\/watch\/\d+/.test(location.pathname)) return;
     const alt = event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey;
-    if (alt && (event.code === 'KeyD' || event.code === 'KeyF' || event.code === 'KeyJ' || event.code === 'KeyC' || event.code === 'KeyS' || event.code === 'KeyB' || event.code === 'ArrowUp' || event.code === 'ArrowDown')) {
+    if (alt && (event.code === 'KeyD' || event.code === 'KeyF' || event.code === 'KeyJ' || event.code === 'KeyC' || event.code === 'KeyS' || event.code === 'KeyB' || event.code === 'Comma' || event.code === 'Period')) {
       event.preventDefault();
       event.stopPropagation();
+      if (event.code === 'Comma' || event.code === 'Period') {
+        nudgeBy(event.code === 'Period' ? 1 : -1);
+        return;
+      }
       if (event.code === 'KeyD') settings.debug = !settings.debug;
       else if (event.code === 'KeyF') settings.furigana = !settings.furigana;
       else if (event.code === 'KeyJ') settings.showJa = !settings.showJa;
       else if (event.code === 'KeyC') settings.showZh = !settings.showZh;
       else if (event.code === 'KeyS') settings.enabled = !settings.enabled;
       else if (event.code === 'KeyB') settings.shade = !settings.shade;
-      else if (event.code === 'ArrowUp') settings.nudge = Math.min(0.2, (Number(settings.nudge) || 0) + 0.02);
-      else settings.nudge = Math.max(-0.06, (Number(settings.nudge) || 0) - 0.02);
       saveSettings();
       applySettings(settings);
       return;
@@ -540,6 +705,12 @@
 
   chrome.storage.local.get('nfjpSettings', function (data) {
     applySettings((data && data.nfjpSettings) || {});
+  });
+
+  chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
+    if (!message || message.type !== 'NFJP_TRANSLATE') return;
+    translateCurrent('popup').then(sendResponse);
+    return true;
   });
 
   function frame() {

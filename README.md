@@ -20,7 +20,8 @@ Open an episode that has Japanese and Chinese subtitles. You do not need to turn
 - Netflix's own subtitle text disappears.
 - A centered block sits near the bottom of the picture: Japanese on top (larger, white), Traditional Chinese underneath (smaller, slightly dimmed). It tracks pause, seek, playback speed, and the next episode.
 - Kanji grow hiragana readings a moment after the episode loads (`[NFJP] kuromoji ready`, then `furigana cached`). If the Netflix file already has ruby, those readings are used immediately.
-- The block stays at the bottom center, about 8% up from the edge, or 14% while the Netflix control bar is visible. It grows upward when a second line appears, so the bottom edge stays put. Alt+↑ / Alt+↓ nudge that spot, and the nudge is kept on the next episode. Japanese timing leads: Chinese lines that overlap the active Japanese cue are shown with it. **Follow Netflix position** in the popup (off by default) is what moves the block to the top for a top-region or forced lyric cue.
+- The block stays at the bottom center, about 8% up from the edge, or 14% while the Netflix control bar is visible. It grows upward when a second line appears, so the bottom edge stays put. Alt+, / Alt+. nudge that spot, and the popup Position slider does the same thing. The nudge is kept on the next episode. Japanese timing leads: Chinese lines that overlap the active Japanese cue are shown with it. **Follow Netflix position** in the popup (off by default) is what moves the block to the top for a top-region or forced lyric cue.
+- A Netflix Japan title that only has Japanese still gets a Traditional Chinese line. The extension translates the Japanese cues on your device and shows that translation under the Japanese, using the same start and end times. Open the toolbar popup and click **Add Traditional Chinese** once so Chrome can download its language model (Chrome 138 or newer on desktop). Later episodes translate on their own. When Netflix already has Chinese, that official file is kept. The translation is saved with the episode, so the next visit does not translate it again.
 - The toolbar icon opens the same toggles, a font-size slider, and a background shade with its own opacity slider. Alt+B toggles the shade.
 
 Press **Alt+D** for the debug box (hidden until then): video id, whether the cues came from `network` or `cache`, the time and reason of the last state clear, the track list, cue counts, the current line, and any download or parse error. **Retry capture** downloads the episode in the current `/watch/<id>` URL again without reloading the page. **Export JSON** saves the cues.
@@ -35,7 +36,7 @@ Press **Alt+D** for the debug box (hidden until then): video id, whether the cue
 | Alt+F | Furigana |
 | Alt+B | Background shade |
 | Alt+D | Debug overlay |
-| Alt+↑ / Alt+↓ | Nudge the block. The offset is remembered. |
+| Alt+, / Alt+. | Move the block down / up. The popup Position slider and Move down / Move up buttons do the same thing. The offset is remembered. |
 | A | Replay the current line |
 | Q / E | Previous / next line |
 
@@ -55,3 +56,4 @@ Console lines are prefixed with `[NFJP]`. The watch id comes only from the page 
 1. **No replacement text, and `[NFJP]` never logs `parsed`.** Capture failed the same way as stage 1: no manifest and no player track list (`no cadmium session root`), or the chosen language stayed `no-url` (`selecting track to load url` without `url ready`), or the download/parser failed (`page fetch failed`, `unrecognized subtitle document`). Alt+D shows the track list. A title with no Japanese or Chinese simply has nothing to draw.
 2. **Japanese and Chinese are the forced or closed-caption track, or Simplified Chinese when Traditional exists.** The preference order is in `pickTargets` in `netflixTracks.js`. Alt+D prints the chosen language plus `CC` or `fallback`. A track with no text URL can still lose out to one that has a file.
 3. **Text is there but furigana never appears.** The offscreen kuromoji page did not load its dictionary. Look for `kuromoji failed`, `offscreen failed`, or `furigana batch failed`. Readings that Netflix already embedded still show; kuromoji is only the fallback. Alt+F turns the feature off entirely.
+4. **Japanese is there and the Chinese line stays empty.** Netflix did not provide a Chinese subtitle file. Click **Add Traditional Chinese** in the popup. The first time, leave the popup open until the language-model download finishes. Alt+D shows `translating`, then `source  translated`. `[NFJP] translate failed` with `download` means the model is not on this profile yet. `[NFJP] unavailable` means this Chrome version or computer cannot run on-device translation.

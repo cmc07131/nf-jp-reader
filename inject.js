@@ -721,6 +721,22 @@
     });
   }
 
+  function markTranslated(data) {
+    const id = data.videoId != null ? String(data.videoId) : '';
+    if (!id || id !== String(activeId || '')) return;
+    if (captureMode === 'retry') {
+      nfLog('translate ignored during retry', id);
+      return;
+    }
+    const prev = finals.get(id);
+    if (prev) prev.final = true;
+    else finals.set(id, { final: true });
+    captureMode = 'skip';
+    downloadToken++;
+    flight = null;
+    nfLog('translated, skip capture', id, 'ja', data.jaCues || 0, 'zh', data.zhCues || 0);
+  }
+
   function onCacheNotice(data) {
     const id = data.videoId != null ? String(data.videoId) : '';
     if (!id || id !== String(activeId || '')) {
@@ -836,6 +852,10 @@
       onCacheNotice(data);
       return;
     }
+    if (data.type === 'TRANSLATED') {
+      markTranslated(data);
+      return;
+    }
     if (data.type === 'RETRY') {
       retryCapture(data.videoId);
       return;
@@ -879,6 +899,22 @@
       nfLog('seek via video element', time);
     }
   }
+
+  window.addEventListener('keydown', function (event) {
+    if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.repeat) return;
+    if (event.code !== 'Comma' && event.code !== 'Period') return;
+    const target = event.target;
+    const tag = target && target.tagName;
+    if (tag === 'INPUT' || tag === 'TEXTAREA' || (target && target.isContentEditable)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+    window.postMessage({
+      source: 'NFJP-PAGE',
+      type: 'NUDGE',
+      direction: event.code === 'Period' ? 1 : -1
+    }, '*');
+  }, true);
 
   nfLog('hooks installed (JSON.parse, JSON.stringify, fetch, XHR) and player scan ready');
   checkLocation();

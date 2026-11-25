@@ -36,14 +36,65 @@ input[type="range"] {
 }
 
 #fontValue,
-#shadeValue {
+#shadeValue,
+#nudgeValue {
   display: inline-block;
   width: 42px;
   font-weight: 600;
+}
+
+label.font span {
+  margin-left: 6px;
+  color: #aaa;
+  font-size: 11px;
+}
+
+.nudge-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.nudge-row button {
+  flex: 1;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 3px;
+  background: #333;
+  color: #fff;
+  cursor: pointer;
 }
 
 p {
   margin: 12px 0 0;
   color: #aaa;
   font-size: 11px;
+}
+
+#translate {
+  display: block;
+  width: 100%;
+  margin-top: 12px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 3px;
+  background: #333;
+  color: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+#translate:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+#translateStatus {
+  margin: 8px 0 0;
+  color: #ddd;
+  font-size: 11px;
+}
+
+#translateStatus:empty {
+  display: none;
 }

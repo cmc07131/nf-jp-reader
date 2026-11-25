@@ -22,7 +22,18 @@
     <input id="shadeOpacity" type="range" min="0" max="100" step="5" value="50">
     <b id="shadeValue">50%</b>
   </label>
-  <p>Alt+↑ / Alt+↓ moves the block. A replays the line. Q / E jumps to the previous or next line.</p>
+  <label class="font">Position <span>Alt+, / Alt+.</span>
+    <input id="nudge" type="range" min="-6" max="20" step="2" value="0">
+    <b id="nudgeValue">0</b>
+  </label>
+  <div class="nudge-row">
+    <button id="nudgeDown" type="button">Move down</button>
+    <button id="nudgeUp" type="button">Move up</button>
+  </div>
+  <p>Alt+, moves the subtitles down and Alt+. moves them up. The slider does the same thing. A replays the line. Q / E jumps to the previous or next line.</p>
+  <button id="translate" type="button">Add Traditional Chinese</button>
+  <p id="translateStatus"></p>
+  <p>When Netflix only has Japanese, this translates those lines on your device and shows them under the Japanese, on the same timing. The first click downloads Chrome's language model. Official Chinese is kept when Netflix already has it.</p>
   <script src="popup.js"></script>
 </body>
 </html>

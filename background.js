@@ -1,6 +1,7 @@
 /*
- * Opens the offscreen tokenizer on demand and forwards line batches to it.
- * Messages aimed at the offscreen document are ignored here so they do not loop.
+ * Opens the offscreen document on demand and forwards tokenizer and translator
+ * batches to it. Messages aimed at the offscreen document are ignored here so
+ * they do not loop.
  */
 const nfLog = function () {
   const args = ['[NFJP]'];
@@ -17,7 +18,7 @@ async function ensureOffscreen() {
     await chrome.offscreen.createDocument({
       url: 'offscreen.html',
       reasons: ['WORKERS'],
-      justification: 'Tokenize Japanese subtitle lines with the bundled kuromoji dictionary.'
+      justification: 'Tokenize Japanese subtitle lines and translate them to Traditional Chinese on device.'
     });
     nfLog('offscreen tokenizer opened');
   } catch (err) {
@@ -26,25 +27,30 @@ async function ensureOffscreen() {
   }
 }
 
-chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
-  if (!message || message.target === 'offscreen' || message.type !== 'NFJP_TOKENIZE') return;
+function forwardOffscreen(type, lines, sendResponse) {
   ensureOffscreen().then(function () {
     chrome.runtime.sendMessage({
       target: 'offscreen',
-      type: 'NFJP_TOKENIZE',
-      lines: message.lines || []
+      type: type,
+      lines: lines || []
     }, function (response) {
       const error = chrome.runtime.lastError;
       if (error) {
-        nfLog('tokenize forward failed', error.message);
+        nfLog(type, 'forward failed', error.message);
         sendResponse({ ok: false, error: error.message });
         return;
       }
-      sendResponse(response || { ok: false, error: 'empty tokenizer response' });
+      sendResponse(response || { ok: false, error: 'empty offscreen response' });
     });
   }).catch(function (err) {
     nfLog('offscreen failed', err && err.message ? err.message : err);
     sendResponse({ ok: false, error: String(err && err.message ? err.message : err) });
   });
+}
+
+chrome.runtime.onMessage.addListener(function (message, sender, sendResponse) {
+  if (!message || message.target === 'offscreen') return;
+  if (message.type !== 'NFJP_TOKENIZE' && message.type !== 'NFJP_TRANSLATE_LINES') return;
+  forwardOffscreen(message.type, message.lines, sendResponse);
   return true;
 });
